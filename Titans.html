@@ -168,6 +168,23 @@
                 </div>
             </div>
             <hr />
+            <div id="optimization-container" class="section accordion">
+                <h2>Optimisation</h2>
+                <div>
+                    <p>Evaluate the impact of each card in the attacker deck by simulating the deck without it.</p>
+                    <div class="grid-row">
+                        <div class="grid-pane">
+                            <label for="optimization-sims">Simulations per duel:</label>
+                            <input type="number" id="optimization-sims" min="1" step="1" value="100">
+                        </div>
+                        <div class="grid-pane" style="display: flex; align-items: flex-end;">
+                            <input id="rank-cards" type="button" value="Rank Carts" />
+                        </div>
+                    </div>
+                    <div id="optimization-results" class="table" style="margin-top: 1em;"></div>
+                </div>
+            </div>
+            <hr />
             <div>
                 <div class="section accordion">
                     <h2>Debug Settings</h2>
@@ -298,6 +315,126 @@
     </div>
 
     <footer id="footer"></footer>
+    <script src="optimisation/deck_card_analysis.js"></script>
+    <script>
+        (function () {
+            const button = document.getElementById('rank-cards');
+            const resultsContainer = document.getElementById('optimization-results');
+            const simulationsInput = document.getElementById('optimization-sims');
+
+            if (!button || !resultsContainer || !simulationsInput) {
+                return;
+            }
+
+            function formatPercent(value) {
+                return `${(value * 100).toFixed(2)}%`;
+            }
+
+            function renderError(message) {
+                resultsContainer.innerHTML = '';
+                const paragraph = document.createElement('p');
+                paragraph.className = 'error';
+                paragraph.textContent = message;
+                resultsContainer.appendChild(paragraph);
+            }
+
+            function renderResults(results) {
+                resultsContainer.innerHTML = '';
+
+                if (!Array.isArray(results) || results.length === 0) {
+                    const paragraph = document.createElement('p');
+                    paragraph.textContent = 'No cards found in the attacker deck.';
+                    resultsContainer.appendChild(paragraph);
+                    return;
+                }
+
+                const table = document.createElement('table');
+                table.className = 'table data-table';
+
+                const head = document.createElement('thead');
+                const headerRow = document.createElement('tr');
+                ['Card', 'Without Win%', 'With Win%', 'Draw%', 'Impact%', 'Wins (Without/With/Draws)', 'Trimmed Deck'].forEach((label) => {
+                    const th = document.createElement('th');
+                    th.textContent = label;
+                    headerRow.appendChild(th);
+                });
+                head.appendChild(headerRow);
+                table.appendChild(head);
+
+                const body = document.createElement('tbody');
+                results.forEach(({ label, stats, trimmedHash }) => {
+                    const row = document.createElement('tr');
+
+                    const cardCell = document.createElement('td');
+                    cardCell.textContent = label;
+                    row.appendChild(cardCell);
+
+                    const withoutCell = document.createElement('td');
+                    withoutCell.textContent = formatPercent(stats.cpuWinrate);
+                    row.appendChild(withoutCell);
+
+                    const withCell = document.createElement('td');
+                    withCell.textContent = formatPercent(stats.playerWinrate);
+                    row.appendChild(withCell);
+
+                    const drawCell = document.createElement('td');
+                    drawCell.textContent = formatPercent(stats.drawRate);
+                    row.appendChild(drawCell);
+
+                    const impactCell = document.createElement('td');
+                    impactCell.textContent = formatPercent(stats.impact);
+                    row.appendChild(impactCell);
+
+                    const winsCell = document.createElement('td');
+                    winsCell.textContent = `${stats.cpuWins}/${stats.playerWins}/${stats.draws}`;
+                    row.appendChild(winsCell);
+
+                    const hashCell = document.createElement('td');
+                    const hashCode = document.createElement('code');
+                    hashCode.textContent = trimmedHash;
+                    hashCell.appendChild(hashCode);
+                    row.appendChild(hashCell);
+
+                    body.appendChild(row);
+                });
+
+                table.appendChild(body);
+                resultsContainer.appendChild(table);
+            }
+
+            button.addEventListener('click', function () {
+                if (!window.DeckCardAnalysis || typeof window.DeckCardAnalysis.run !== 'function') {
+                    renderError('Deck analysis module is not available.');
+                    return;
+                }
+
+                const deckInput = document.getElementById('deck1');
+                const deckHash = deckInput ? deckInput.value.trim() : '';
+                if (!deckHash) {
+                    renderError('Enter an attacker deck hash before ranking cards.');
+                    return;
+                }
+
+                const simulations = Number.parseInt(simulationsInput.value, 10);
+                if (!Number.isFinite(simulations) || simulations <= 0) {
+                    renderError('Simulations per duel must be a positive number.');
+                    return;
+                }
+
+                resultsContainer.innerHTML = '<p>Calculating...</p>';
+
+                window.setTimeout(() => {
+                    try {
+                        const analysis = window.DeckCardAnalysis.run(deckHash, simulations);
+                        renderResults(analysis.results);
+                    } catch (error) {
+                        console.error(error);
+                        renderError(error && error.message ? error.message : 'An unexpected error occurred during analysis.');
+                    }
+                }, 10);
+            });
+        })();
+    </script>
     <script src="register-worker.js"></script>
 </body>
 </html>

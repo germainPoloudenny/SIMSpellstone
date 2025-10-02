@@ -1,10 +1,23 @@
 #!/usr/bin/env node
 
-const fs = require('fs');
-const path = require('path');
-const vm = require('vm');
+const isNode = typeof process !== 'undefined' && process.release && process.release.name === 'node';
+
+let fs;
+let path;
+let vm;
+
+if (isNode) {
+  fs = require('fs');
+  path = require('path');
+  vm = require('vm');
+}
+
+let environmentBootstrapped = false;
 
 function loadScript(relativePath) {
+  if (!isNode) {
+    throw new Error('loadScript can only be used in a Node environment.');
+  }
   const absolutePath = path.resolve(__dirname, '..', relativePath);
   let code = fs.readFileSync(absolutePath, 'utf8');
   if (code.charCodeAt(0) === 0xfeff) {
@@ -14,34 +27,52 @@ function loadScript(relativePath) {
 }
 
 function bootstrapSimulationEnvironment() {
-  global.window = global.window || { location: { search: '', href: '' } };
-  global.SIMULATOR = global.SIMULATOR || { battlegrounds: { onCreate: [], onTurn: [], onCardPlayed: [] } };
-
-  const dataScripts = [
-    'scripts/data/skills.js',
-    'scripts/data/cards.js',
-    'scripts/data/fusions.js',
-    'scripts/data/spoilers.js',
-    'scripts/data/bges.js',
-    'scripts/data/mapBGEs.js',
-    'scripts/data/campaign.js',
-    'scripts/data/runes.js',
-    'scripts/data/raids.js',
-    'scripts/data/common.js'
-  ];
-
-  dataScripts.forEach(loadScript);
-  loadScript('scripts/data/fixGlobals.js');
-
-  loadScript('scripts/shared.js');
-  loadScript('scripts/simulator_base.js');
-
-  if (!SIMULATOR.battlegrounds) {
-    SIMULATOR.battlegrounds = { onCreate: [], onTurn: [], onCardPlayed: [] };
+  if (environmentBootstrapped) {
+    return;
   }
+
+  if (isNode) {
+    global.window = global.window || { location: { search: '', href: '' } };
+    global.SIMULATOR = global.SIMULATOR || { battlegrounds: { onCreate: [], onTurn: [], onCardPlayed: [] } };
+
+    const dataScripts = [
+      'scripts/data/skills.js',
+      'scripts/data/cards.js',
+      'scripts/data/fusions.js',
+      'scripts/data/spoilers.js',
+      'scripts/data/bges.js',
+      'scripts/data/mapBGEs.js',
+      'scripts/data/campaign.js',
+      'scripts/data/runes.js',
+      'scripts/data/raids.js',
+      'scripts/data/common.js'
+    ];
+
+    dataScripts.forEach(loadScript);
+    loadScript('scripts/data/fixGlobals.js');
+
+    loadScript('scripts/shared.js');
+    loadScript('scripts/simulator_base.js');
+
+    if (!SIMULATOR.battlegrounds) {
+      SIMULATOR.battlegrounds = { onCreate: [], onTurn: [], onCardPlayed: [] };
+    }
+  } else {
+    if (typeof SIMULATOR === 'undefined') {
+      throw new Error('Simulator environment is not available. Make sure simulator scripts are loaded.');
+    }
+    if (!SIMULATOR.battlegrounds) {
+      SIMULATOR.battlegrounds = { onCreate: [], onTurn: [], onCardPlayed: [] };
+    }
+  }
+
+  environmentBootstrapped = true;
 }
 
 function parseArguments() {
+  if (!isNode) {
+    throw new Error('parseArguments can only be used in a Node environment.');
+  }
   const [, , deckHash, simsArg] = process.argv;
   if (!deckHash) {
     console.error('Usage: node optimisation/deck_card_analysis.js <deckHash> [simulationsPerDuel]');
@@ -136,8 +167,12 @@ function formatCardLabel(unitInfo, occurrenceTracker) {
 function analyzeDeck(deckHash, simulations) {
   const decodedDeck = hash_decode(deckHash);
   if (!decodedDeck || !decodedDeck.deck || !decodedDeck.deck.length) {
-    console.error('The provided deck hash does not contain any cards.');
-    process.exit(1);
+    const message = 'The provided deck hash does not contain any cards.';
+    if (isNode) {
+      console.error(message);
+      process.exit(1);
+    }
+    throw new Error(message);
   }
 
   const results = [];
@@ -190,10 +225,44 @@ function printResults(deckHash, simulations, results) {
   });
 }
 
-(function main() {
+function runDeckCardAnalysis(deckHash, simulations) {
   bootstrapSimulationEnvironment();
+
+  if (!deckHash) {
+    throw new Error('A deck hash is required to analyse cards.');
+  }
+
+  const desiredSimulations = simulations === undefined ? 100 : Number(simulations);
+  if (!Number.isFinite(desiredSimulations) || desiredSimulations <= 0) {
+    throw new Error('Simulations per duel must be a positive number.');
+  }
+
+  const normalizedSimulations = Math.floor(desiredSimulations);
+  const results = analyzeDeck(deckHash, normalizedSimulations);
+  return { deckHash, simulations: normalizedSimulations, results };
+}
+
+function main() {
   const { deckHash, simulations } = parseArguments();
-  const results = analyzeDeck(deckHash, simulations);
+  const { results } = runDeckCardAnalysis(deckHash, simulations);
   printResults(deckHash, simulations, results);
-})();
+}
+
+const api = {
+  run: runDeckCardAnalysis,
+  analyzeDeck,
+  simulateMatchup,
+  createSimConfig,
+  bootstrapSimulationEnvironment,
+  printResults
+};
+
+if (isNode) {
+  module.exports = api;
+  if (require.main === module) {
+    main();
+  }
+} else {
+  window.DeckCardAnalysis = api;
+}
 
