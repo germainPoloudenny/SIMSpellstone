@@ -177,11 +177,17 @@
                             <label for="optimization-sims">Simulations per duel:</label>
                             <input type="number" id="optimization-sims" min="1" step="1" value="100">
                         </div>
-                        <div class="grid-pane" style="display: flex; align-items: flex-end;">
-                            <input id="rank-cards" type="button" value="Rank Carts" />
+                        <div class="grid-pane">
+                            <label for="optimization-replacements">Replacement deck hash:</label>
+                            <input type="text" id="optimization-replacements" value="" onfocus="this.select();">
+                        </div>
+                        <div class="grid-pane" style="display: flex; align-items: flex-end; gap: 0.5em;">
+                            <input id="rank-cards" type="button" value="Rank Cards" />
+                            <input id="optimize-deck" type="button" value="Optimise Deck" />
                         </div>
                     </div>
                     <div id="optimization-results" class="table" style="margin-top: 1em;"></div>
+                    <div id="optimization-steps" class="table" style="margin-top: 1em;"></div>
                 </div>
             </div>
             <hr />
@@ -318,11 +324,14 @@
     <script src="optimisation/deck_card_analysis.js"></script>
     <script>
         (function () {
-            const button = document.getElementById('rank-cards');
+            const rankButton = document.getElementById('rank-cards');
+            const optimizeButton = document.getElementById('optimize-deck');
+            const replacementsInput = document.getElementById('optimization-replacements');
             const resultsContainer = document.getElementById('optimization-results');
+            const stepsContainer = document.getElementById('optimization-steps');
             const simulationsInput = document.getElementById('optimization-sims');
 
-            if (!button || !resultsContainer || !simulationsInput) {
+            if (!resultsContainer || !simulationsInput) {
                 return;
             }
 
@@ -402,37 +411,164 @@
                 resultsContainer.appendChild(table);
             }
 
-            button.addEventListener('click', function () {
-                if (!window.DeckCardAnalysis || typeof window.DeckCardAnalysis.run !== 'function') {
-                    renderError('Deck analysis module is not available.');
+            function renderOptimizationError(message) {
+                if (!stepsContainer) {
+                    return;
+                }
+                stepsContainer.innerHTML = '';
+                const paragraph = document.createElement('p');
+                paragraph.className = 'error';
+                paragraph.textContent = message;
+                stepsContainer.appendChild(paragraph);
+            }
+
+            function renderOptimizationSteps(summary) {
+                if (!stepsContainer) {
                     return;
                 }
 
-                const deckInput = document.getElementById('deck1');
-                const deckHash = deckInput ? deckInput.value.trim() : '';
-                if (!deckHash) {
-                    renderError('Enter an attacker deck hash before ranking cards.');
+                stepsContainer.innerHTML = '';
+
+                if (!summary) {
                     return;
                 }
 
-                const simulations = Number.parseInt(simulationsInput.value, 10);
-                if (!Number.isFinite(simulations) || simulations <= 0) {
-                    renderError('Simulations per duel must be a positive number.');
+                const finalParagraph = document.createElement('p');
+                finalParagraph.innerHTML = `Final deck hash: <code>${summary.finalDeckHash}</code>`;
+                stepsContainer.appendChild(finalParagraph);
+
+                if (!Array.isArray(summary.steps) || summary.steps.length === 0) {
+                    const paragraph = document.createElement('p');
+                    paragraph.textContent = 'No replacements were applied.';
+                    stepsContainer.appendChild(paragraph);
                     return;
                 }
 
-                resultsContainer.innerHTML = '<p>Calculating...</p>';
+                const table = document.createElement('table');
+                table.className = 'table data-table';
 
-                window.setTimeout(() => {
-                    try {
-                        const analysis = window.DeckCardAnalysis.run(deckHash, simulations);
-                        renderResults(analysis.results);
-                    } catch (error) {
-                        console.error(error);
-                        renderError(error && error.message ? error.message : 'An unexpected error occurred during analysis.');
+                const head = document.createElement('thead');
+                const headerRow = document.createElement('tr');
+                ['Step', 'Removed Card', 'Added Card', 'Outcome', 'Win% (New/Old)', 'Resulting Deck Hash'].forEach((label) => {
+                    const th = document.createElement('th');
+                    th.textContent = label;
+                    headerRow.appendChild(th);
+                });
+                head.appendChild(headerRow);
+                table.appendChild(head);
+
+                const body = document.createElement('tbody');
+                summary.steps.forEach((step) => {
+                    const row = document.createElement('tr');
+
+                    const stepCell = document.createElement('td');
+                    stepCell.textContent = step.iteration;
+                    row.appendChild(stepCell);
+
+                    const removedCell = document.createElement('td');
+                    removedCell.textContent = step.removedCard && step.removedCard.label ? step.removedCard.label : 'Unknown card';
+                    row.appendChild(removedCell);
+
+                    const addedCell = document.createElement('td');
+                    addedCell.textContent = step.addedCard && step.addedCard.description ? step.addedCard.description : 'Unknown card';
+                    row.appendChild(addedCell);
+
+                    const outcomeCell = document.createElement('td');
+                    outcomeCell.textContent = step.accepted ? 'Accepted' : 'Rejected';
+                    row.appendChild(outcomeCell);
+
+                    const winrateCell = document.createElement('td');
+                    const newRate = step.stats ? formatPercent(step.stats.playerWinrate) : '0.00%';
+                    const oldRate = step.stats ? formatPercent(step.stats.cpuWinrate) : '0.00%';
+                    winrateCell.textContent = `${newRate} / ${oldRate}`;
+                    row.appendChild(winrateCell);
+
+                    const hashCell = document.createElement('td');
+                    const hashCode = document.createElement('code');
+                    hashCode.textContent = step.resultingDeckHash || '';
+                    hashCell.appendChild(hashCode);
+                    row.appendChild(hashCell);
+
+                    body.appendChild(row);
+                });
+
+                table.appendChild(body);
+                stepsContainer.appendChild(table);
+            }
+
+            if (rankButton) {
+                rankButton.addEventListener('click', function () {
+                    if (!window.DeckCardAnalysis || typeof window.DeckCardAnalysis.run !== 'function') {
+                        renderError('Deck analysis module is not available.');
+                        return;
                     }
-                }, 10);
-            });
+
+                    const deckInput = document.getElementById('deck1');
+                    const deckHash = deckInput ? deckInput.value.trim() : '';
+                    if (!deckHash) {
+                        renderError('Enter an attacker deck hash before ranking cards.');
+                        return;
+                    }
+
+                    const simulations = Number.parseInt(simulationsInput.value, 10);
+                    if (!Number.isFinite(simulations) || simulations <= 0) {
+                        renderError('Simulations per duel must be a positive number.');
+                        return;
+                    }
+
+                    resultsContainer.innerHTML = '<p>Calculating...</p>';
+
+                    window.setTimeout(() => {
+                        try {
+                            const analysis = window.DeckCardAnalysis.run(deckHash, simulations);
+                            renderResults(analysis.results);
+                        } catch (error) {
+                            console.error(error);
+                            renderError(error && error.message ? error.message : 'An unexpected error occurred during analysis.');
+                        }
+                    }, 10);
+                });
+            }
+
+            if (optimizeButton && replacementsInput && stepsContainer) {
+                optimizeButton.addEventListener('click', function () {
+                    if (!window.DeckCardAnalysis || typeof window.DeckCardAnalysis.optimizeDeck !== 'function') {
+                        renderOptimizationError('Deck optimisation module is not available.');
+                        return;
+                    }
+
+                    const deckInput = document.getElementById('deck1');
+                    const deckHash = deckInput ? deckInput.value.trim() : '';
+                    if (!deckHash) {
+                        renderOptimizationError('Enter an attacker deck hash before optimising cards.');
+                        return;
+                    }
+
+                    const replacementsHash = replacementsInput.value.trim();
+                    if (!replacementsHash) {
+                        renderOptimizationError('Enter a replacement deck hash to optimise the deck.');
+                        return;
+                    }
+
+                    const simulations = Number.parseInt(simulationsInput.value, 10);
+                    if (!Number.isFinite(simulations) || simulations <= 0) {
+                        renderOptimizationError('Simulations per duel must be a positive number.');
+                        return;
+                    }
+
+                    stepsContainer.innerHTML = '<p>Calculating...</p>';
+
+                    window.setTimeout(() => {
+                        try {
+                            const summary = window.DeckCardAnalysis.optimizeDeck(deckHash, replacementsHash, simulations);
+                            renderOptimizationSteps(summary);
+                        } catch (error) {
+                            console.error(error);
+                            renderOptimizationError(error && error.message ? error.message : 'An unexpected error occurred during optimisation.');
+                        }
+                    }, 10);
+                });
+            }
         })();
     </script>
     <script src="register-worker.js"></script>

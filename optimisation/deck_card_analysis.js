@@ -154,11 +154,45 @@ function simulateMatchup(playerDeckHash, cpuDeckHash, simulations) {
   };
 }
 
-function formatCardLabel(unitInfo, occurrenceTracker) {
+function cloneUnitInfo(unitInfo) {
+  if (!unitInfo) {
+    return unitInfo;
+  }
+  const clone = Object.assign({}, unitInfo);
+  if (Array.isArray(unitInfo.runes)) {
+    clone.runes = unitInfo.runes.slice();
+  }
+  if (Array.isArray(unitInfo.subskills)) {
+    clone.subskills = unitInfo.subskills.slice();
+  }
+  return clone;
+}
+
+function cloneDeckDefinition(deck) {
+  if (!deck) {
+    return { commander: undefined, deck: [] };
+  }
+  return {
+    commander: deck.commander ? cloneUnitInfo(deck.commander) : undefined,
+    deck: Array.isArray(deck.deck) ? deck.deck.map(cloneUnitInfo) : []
+  };
+}
+
+function describeCard(unitInfo) {
+  if (!unitInfo) {
+    return 'Unknown card';
+  }
   const card = getCardByID(unitInfo);
+  if (!card) {
+    return 'Unknown card';
+  }
   const runeSuffix = card.runes && card.runes.length ? '*' : '';
   const levelInfo = card.maxLevel > 1 ? ` {${card.level}/${card.maxLevel}}` : '';
-  const baseLabel = `${card.name}${runeSuffix}${levelInfo}`;
+  return `${card.name}${runeSuffix}${levelInfo}`;
+}
+
+function formatCardLabel(unitInfo, occurrenceTracker) {
+  const baseLabel = describeCard(unitInfo);
   const count = (occurrenceTracker[baseLabel] || 0) + 1;
   occurrenceTracker[baseLabel] = count;
   return `${baseLabel} #${count}`;
@@ -190,6 +224,8 @@ function analyzeDeck(deckHash, simulations) {
     results.push({
       label,
       trimmedHash,
+      cardIndex: index,
+      unitInfo: cloneUnitInfo(unitInfo),
       stats: {
         simulations: total,
         playerWins,
@@ -242,6 +278,93 @@ function runDeckCardAnalysis(deckHash, simulations) {
   return { deckHash, simulations: normalizedSimulations, results };
 }
 
+function optimizeDeck(deckHash, replacementsHash, simulations) {
+  bootstrapSimulationEnvironment();
+
+  if (!deckHash) {
+    throw new Error('A deck hash is required to optimize a deck.');
+  }
+
+  const desiredSimulations = simulations === undefined ? 100 : Number(simulations);
+  if (!Number.isFinite(desiredSimulations) || desiredSimulations <= 0) {
+    throw new Error('Simulations per duel must be a positive number.');
+  }
+
+  const normalizedSimulations = Math.floor(desiredSimulations);
+
+  const decodedDeck = hash_decode(deckHash);
+  if (!decodedDeck || !decodedDeck.deck || !decodedDeck.deck.length) {
+    throw new Error('The provided deck hash does not contain any cards to optimise.');
+  }
+
+  if (!replacementsHash) {
+    throw new Error('A replacement deck hash is required to optimise the deck.');
+  }
+
+  const decodedReplacements = hash_decode(replacementsHash);
+  const replacementCards = decodedReplacements && Array.isArray(decodedReplacements.deck)
+    ? decodedReplacements.deck.map(cloneUnitInfo)
+    : [];
+
+  if (!replacementCards.length) {
+    throw new Error('The replacement deck hash must contain at least one card.');
+  }
+
+  let currentDeck = cloneDeckDefinition(decodedDeck);
+  let currentDeckHash = hash_encode(currentDeck);
+  const steps = [];
+  let iteration = 0;
+
+  while (replacementCards.length) {
+    iteration += 1;
+    const nextCard = replacementCards.shift();
+    const ranking = analyzeDeck(currentDeckHash, normalizedSimulations);
+
+    if (!ranking.length) {
+      break;
+    }
+
+    const worstCard = ranking[ranking.length - 1];
+    const previousDeckHash = currentDeckHash;
+    const removedIndex = worstCard.cardIndex;
+    const removedCard = cloneUnitInfo(currentDeck.deck[removedIndex]);
+
+    currentDeck.deck[removedIndex] = cloneUnitInfo(nextCard);
+    const candidateDeckHash = hash_encode(currentDeck);
+    const comparisonStats = simulateMatchup(candidateDeckHash, previousDeckHash, normalizedSimulations);
+    const accepted = comparisonStats.playerWinrate > comparisonStats.cpuWinrate;
+
+    if (!accepted) {
+      currentDeck.deck[removedIndex] = removedCard;
+    } else {
+      currentDeckHash = candidateDeckHash;
+    }
+
+    steps.push({
+      iteration,
+      accepted,
+      previousDeckHash,
+      resultingDeckHash: accepted ? candidateDeckHash : previousDeckHash,
+      removedCard: {
+        index: removedIndex,
+        label: worstCard.label,
+        description: describeCard(removedCard)
+      },
+      addedCard: {
+        description: describeCard(nextCard)
+      },
+      stats: comparisonStats
+    });
+  }
+
+  return {
+    initialDeckHash: deckHash,
+    finalDeckHash: currentDeckHash,
+    simulations: normalizedSimulations,
+    steps
+  };
+}
+
 function main() {
   const { deckHash, simulations } = parseArguments();
   const { results } = runDeckCardAnalysis(deckHash, simulations);
@@ -250,6 +373,7 @@ function main() {
 
 const api = {
   run: runDeckCardAnalysis,
+  optimizeDeck,
   analyzeDeck,
   simulateMatchup,
   createSimConfig,
