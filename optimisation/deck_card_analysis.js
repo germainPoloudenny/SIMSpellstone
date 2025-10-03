@@ -86,12 +86,94 @@ function parseArguments() {
   return { deckHash, simulations: Math.floor(simulations) };
 }
 
-function createSimConfig(playerDeckHash, cpuDeckHash, simulations) {
-  return {
+function getBattlegroundsFromPage(prefix) {
+  if (typeof document === 'undefined') {
+    return '';
+  }
+  const name = `${prefix || ''}battleground`;
+  const checkboxes = document.getElementsByName(name);
+  if (!checkboxes || !checkboxes.length) {
+    return '';
+  }
+  const selected = [];
+  for (let index = 0; index < checkboxes.length; index += 1) {
+    const checkbox = checkboxes[index];
+    if (checkbox && checkbox.checked) {
+      selected.push(checkbox.value);
+    }
+  }
+  return selected.join();
+}
+
+function getMapBattlegroundsFromPage() {
+  if (typeof document === 'undefined') {
+    return '';
+  }
+  const selects = document.getElementsByName('map-battleground');
+  if (!selects || !selects.length) {
+    return '';
+  }
+  const locationElement = document.getElementById('location');
+  const locationID = locationElement ? locationElement.value : '';
+  const selected = [];
+  for (let index = 0; index < selects.length; index += 1) {
+    const select = selects[index];
+    if (!select) {
+      continue;
+    }
+    const value = select.value;
+    if (value && Number(value) > 0) {
+      selected.push(`${locationID}-${index}-${value}`);
+    }
+  }
+  return selected.join();
+}
+
+function collectBattlegroundSelections() {
+  if (isNode) {
+    return {
+      enemybges: '',
+      getbattleground: '',
+      selfbges: '',
+      mapbges: ''
+    };
+  }
+
+  const scope = typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : undefined);
+  const selections = {
     enemybges: '',
     getbattleground: '',
     selfbges: '',
-    mapbges: '',
+    mapbges: ''
+  };
+
+  if (scope && typeof scope.getSelectedBattlegrounds === 'function') {
+    selections.getbattleground = scope.getSelectedBattlegrounds('') || '';
+    selections.selfbges = scope.getSelectedBattlegrounds('self-') || '';
+    selections.enemybges = scope.getSelectedBattlegrounds('enemy-') || '';
+  } else {
+    selections.getbattleground = getBattlegroundsFromPage('');
+    selections.selfbges = getBattlegroundsFromPage('self-');
+    selections.enemybges = getBattlegroundsFromPage('enemy-');
+  }
+
+  if (scope && typeof scope.getSelectedMapBattlegrounds === 'function') {
+    selections.mapbges = scope.getSelectedMapBattlegrounds() || '';
+  } else {
+    selections.mapbges = getMapBattlegroundsFromPage();
+  }
+
+  return selections;
+}
+
+function createSimConfig(playerDeckHash, cpuDeckHash, simulations) {
+  const battlegroundSelections = collectBattlegroundSelections();
+
+  return {
+    enemybges: battlegroundSelections.enemybges,
+    getbattleground: battlegroundSelections.getbattleground,
+    selfbges: battlegroundSelections.selfbges,
+    mapbges: battlegroundSelections.mapbges,
     playerDeck: playerDeckHash,
     playerOrdered: false,
     playerExactOrdered: false,
