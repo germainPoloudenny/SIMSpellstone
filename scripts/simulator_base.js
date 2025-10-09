@@ -2067,7 +2067,7 @@ var SIMULATOR = {};
 		deck.cpu.chooseCard = (simConfig.cpuOrdered ? chooseCardOrdered           // Ordered mode tries to pick the card closest to the specified ordering
 				: simConfig.pvpAI ? chooseCardByPoints                // PvP defenders have a special algorithm for determining which card to play
 					: simConfig.cpuExactOrdered ? chooseCardRandomly       // If deck is not shuffled, but we're not playing "ordered mode", pick a random card from hand
-						: chooseFirstCard);                         // If none of the other options are true, this is the standard PvE AI and it just picks the first card in hand
+						: chooseCardRandomly);                         // If none of the other options are true, this is the standard PvE AI and it just picks a random card from hand
 	}
 
 	// Simulate one game
@@ -2123,7 +2123,7 @@ var SIMULATOR = {};
 		simConfig.cache_player_deck_cards = getDeckCards(cache_player_deck, 'player');
 
 		// Load enemy deck
-		var pvpAI = true;
+		var pvpAI = false;
 		var cache_cpu_deck;
 		if (simConfig.cpuDeck) {
 			cache_cpu_deck = hash_decode(simConfig.cpuDeck);

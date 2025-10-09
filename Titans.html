@@ -175,18 +175,27 @@
                     <div class="grid-row">
                         <div class="grid-pane">
                             <label for="optimization-sims">Simulations per duel:</label>
-                            <input type="number" id="optimization-sims" min="1" step="1" value="100">
+                            <input type="number" id="optimization-sims" min="1" step="1" value="10000">
                         </div>
                         <div class="grid-pane">
                             <label for="optimization-replacements">Replacement deck hash:</label>
                             <input type="text" id="optimization-replacements" value="" onfocus="this.select();">
                         </div>
-                        <div class="grid-pane" style="display: flex; align-items: flex-end; gap: 0.5em;">
+                        <div class="grid-pane">
+                            <label for="hero-hash">Hero hash:</label>
+                            <input type="text" id="hero-hash" value="" onfocus="this.select();">
+                        </div>
+                        <div class="grid-pane" style="display: flex; align-items: flex-end; gap: 0.5em; flex-wrap: wrap;">
                             <input id="rank-cards" type="button" value="Rank Cards" />
+                            <input id="rank-heroes" type="button" value="Rank Heroes" />
+                            <input id="rank-purple-runes" type="button" value="Rank Purple Runes" />
                             <input id="optimize-deck" type="button" value="Optimise Deck" />
                         </div>
                     </div>
                     <div id="optimization-results" class="table" style="margin-top: 1em;"></div>
+                    <div id="hero-optimization-results" class="table" style="margin-top: 1em;"></div>
+                    <div id="rune-optimization-results" class="table" style="margin-top: 1em;"></div>
+                    <div id="hero-optimization-log" class="table" style="margin-top: 1em;"></div>
                     <div id="optimization-steps" class="table" style="margin-top: 1em;"></div>
                 </div>
             </div>
@@ -325,11 +334,17 @@
     <script>
         (function () {
             const rankButton = document.getElementById('rank-cards');
+            const rankHeroesButton = document.getElementById('rank-heroes');
             const optimizeButton = document.getElementById('optimize-deck');
+            const rankPurpleRunesButton = document.getElementById('rank-purple-runes');
             const replacementsInput = document.getElementById('optimization-replacements');
             const resultsContainer = document.getElementById('optimization-results');
+            const heroResultsContainer = document.getElementById('hero-optimization-results');
+            const heroLogContainer = document.getElementById('hero-optimization-log');
+            const heroHashInput = document.getElementById('hero-hash');
             const stepsContainer = document.getElementById('optimization-steps');
             const simulationsInput = document.getElementById('optimization-sims');
+            const runeResultsContainer = document.getElementById('rune-optimization-results');
 
             if (!resultsContainer || !simulationsInput) {
                 return;
@@ -339,12 +354,261 @@
                 return `${(value * 100).toFixed(2)}%`;
             }
 
+            function cloneUnitInfo(unitInfo) {
+                if (!unitInfo) {
+                    return unitInfo;
+                }
+                const clone = Object.assign({}, unitInfo);
+                if (Array.isArray(unitInfo.runes)) {
+                    clone.runes = unitInfo.runes.slice();
+                }
+                if (Array.isArray(unitInfo.subskills)) {
+                    clone.subskills = unitInfo.subskills.slice();
+                }
+                return clone;
+            }
+
+            function describeUnit(unitInfo) {
+                if (!unitInfo || typeof getCardByID !== 'function') {
+                    return 'Unknown hero';
+                }
+                const card = getCardByID(unitInfo);
+                if (!card) {
+                    return 'Unknown hero';
+                }
+                const runeSuffix = card.runes && card.runes.length ? '*' : '';
+                const levelInfo = card.maxLevel > 1 ? ` {${card.level}/${card.maxLevel}}` : '';
+                return `${card.name}${runeSuffix}${levelInfo}`;
+            }
+
+            function formatHeroLabel(unitInfo, tracker) {
+                const baseLabel = describeUnit(unitInfo);
+                const count = (tracker[baseLabel] || 0) + 1;
+                tracker[baseLabel] = count;
+                return count > 1 ? `${baseLabel} #${count}` : `${baseLabel} #1`;
+            }
+
             function renderError(message) {
                 resultsContainer.innerHTML = '';
                 const paragraph = document.createElement('p');
                 paragraph.className = 'error';
                 paragraph.textContent = message;
                 resultsContainer.appendChild(paragraph);
+            }
+
+            function renderHeroError(message) {
+                if (heroResultsContainer) {
+                    heroResultsContainer.innerHTML = '';
+                    const paragraph = document.createElement('p');
+                    paragraph.className = 'error';
+                    paragraph.textContent = message;
+                    heroResultsContainer.appendChild(paragraph);
+                }
+                if (heroLogContainer) {
+                    heroLogContainer.innerHTML = '';
+                }
+            }
+
+            function renderRuneError(message) {
+                if (runeResultsContainer) {
+                    runeResultsContainer.innerHTML = '';
+                    const paragraph = document.createElement('p');
+                    paragraph.className = 'error';
+                    paragraph.textContent = message;
+                    runeResultsContainer.appendChild(paragraph);
+                }
+            }
+
+            function renderRuneResults(results) {
+                if (!runeResultsContainer) return;
+                runeResultsContainer.innerHTML = '';
+                if (!Array.isArray(results) || results.length === 0) {
+                    const paragraph = document.createElement('p');
+                    paragraph.textContent = 'No applicable purple runes found for any card.';
+                    runeResultsContainer.appendChild(paragraph);
+                    return;
+                }
+
+                results.forEach((entry) => {
+                    if (!entry || !Array.isArray(entry.runeRankings) || entry.runeRankings.length === 0) return;
+                    const title = document.createElement('h4');
+                    title.textContent = entry.label;
+                    runeResultsContainer.appendChild(title);
+
+                    const table = document.createElement('table');
+                    table.className = 'table data-table';
+                    const head = document.createElement('thead');
+                    const headerRow = document.createElement('tr');
+                    ['Rune', 'Win% With', 'Win% Without', 'Draw%', 'Impact', 'Wins (With/Without/Draws)'].forEach((label) => {
+                        const th = document.createElement('th');
+                        th.textContent = label;
+                        headerRow.appendChild(th);
+                    });
+                    head.appendChild(headerRow);
+                    table.appendChild(head);
+
+                    const body = document.createElement('tbody');
+                    entry.runeRankings.forEach((r) => {
+                        const row = document.createElement('tr');
+                        const withPct = formatPercent(r.stats.playerWinrate);
+                        const withoutPct = formatPercent(r.stats.cpuWinrate);
+                        const drawPct = formatPercent(r.stats.drawRate);
+                        const impactPct = formatPercent(r.impact);
+
+                        const cols = [
+                            r.runeDesc,
+                            withPct,
+                            withoutPct,
+                            drawPct,
+                            impactPct,
+                            `${String(r.stats.playerWins)} / ${String(r.stats.cpuWins)} / ${String(r.stats.draws)}`
+                        ];
+                        cols.forEach((text) => {
+                            const td = document.createElement('td');
+                            td.textContent = text;
+                            row.appendChild(td);
+                        });
+
+                        body.appendChild(row);
+                    });
+                    table.appendChild(body);
+                    runeResultsContainer.appendChild(table);
+                });
+            }
+
+            function buildHeroDeckHash(heroUnit, baseDeckCards) {
+                const deckDefinition = {
+                    commander: cloneUnitInfo(heroUnit),
+                    deck: Array.isArray(baseDeckCards) ? baseDeckCards.map(cloneUnitInfo) : []
+                };
+                return hash_encode(deckDefinition);
+            }
+
+            function extractHeroesFromHash(heroHash) {
+                if (!heroHash) {
+                    return [];
+                }
+
+                const decoded = hash_decode(heroHash);
+                if (!decoded) {
+                    return [];
+                }
+
+                const heroes = [];
+                const tracker = {};
+                const canCheckCommander = typeof is_commander === 'function';
+
+                if (decoded.commander && (!canCheckCommander || is_commander(decoded.commander.id))) {
+                    heroes.push({ unit: cloneUnitInfo(decoded.commander) });
+                }
+
+                if (Array.isArray(decoded.deck)) {
+                    decoded.deck.forEach((unitInfo) => {
+                        if (!unitInfo) {
+                            return;
+                        }
+                        if (!canCheckCommander || is_commander(unitInfo.id)) {
+                            heroes.push({ unit: cloneUnitInfo(unitInfo) });
+                        }
+                    });
+                }
+
+                return heroes.map((entry) => ({
+                    unit: entry.unit,
+                    label: formatHeroLabel(entry.unit, tracker)
+                }));
+            }
+
+            function renderHeroResults(bestHero, bestStats, duelLogs) {
+                if (heroResultsContainer) {
+                    heroResultsContainer.innerHTML = '';
+
+                    if (!bestHero || !bestStats) {
+                        const paragraph = document.createElement('p');
+                        paragraph.textContent = 'No hero results available.';
+                        heroResultsContainer.appendChild(paragraph);
+                    } else {
+                        const summary = document.createElement('p');
+                        summary.innerHTML = `Best hero: <strong>${bestHero.label}</strong>`;
+                        heroResultsContainer.appendChild(summary);
+
+                        const winrateParagraph = document.createElement('p');
+                        winrateParagraph.textContent = `Winrate vs defender deck: ${formatPercent(bestStats.playerWinrate)} (Wins: ${bestStats.playerWins}, Losses: ${bestStats.cpuWins}, Draws: ${bestStats.draws})`;
+                        heroResultsContainer.appendChild(winrateParagraph);
+
+                        const totalSimulations = bestStats.total || (bestStats.playerWins + bestStats.cpuWins + bestStats.draws);
+                        const simulationsParagraph = document.createElement('p');
+                        simulationsParagraph.textContent = `Simulations: ${totalSimulations}`;
+                        heroResultsContainer.appendChild(simulationsParagraph);
+                    }
+                }
+
+                if (heroLogContainer) {
+                    heroLogContainer.innerHTML = '';
+
+                    if (!duelLogs || duelLogs.length === 0) {
+                        const paragraph = document.createElement('p');
+                        paragraph.textContent = 'No duels were simulated. Provide at least two heroes to compare.';
+                        heroLogContainer.appendChild(paragraph);
+                        return;
+                    }
+
+                    const table = document.createElement('table');
+                    table.className = 'table data-table';
+
+                    const head = document.createElement('thead');
+                    const headerRow = document.createElement('tr');
+                    ['Iteration', 'Champion', 'Champion Win%', 'Challenger', 'Challenger Win%', 'Winner', 'Wins (Champion/Challenger/Draws)'].forEach((label) => {
+                        const th = document.createElement('th');
+                        th.textContent = label;
+                        headerRow.appendChild(th);
+                    });
+                    head.appendChild(headerRow);
+                    table.appendChild(head);
+
+                    const body = document.createElement('tbody');
+                    duelLogs.forEach((log) => {
+                        const row = document.createElement('tr');
+
+                        const iterationCell = document.createElement('td');
+                        iterationCell.textContent = log.iteration;
+                        row.appendChild(iterationCell);
+
+                        const championCell = document.createElement('td');
+                        championCell.textContent = log.championLabel;
+                        row.appendChild(championCell);
+
+                        const championWinrateCell = document.createElement('td');
+                        championWinrateCell.textContent = formatPercent(log.championWinrate);
+                        row.appendChild(championWinrateCell);
+
+                        const challengerCell = document.createElement('td');
+                        challengerCell.textContent = log.challengerLabel;
+                        row.appendChild(challengerCell);
+
+                        const challengerWinrateCell = document.createElement('td');
+                        challengerWinrateCell.textContent = formatPercent(log.challengerWinrate);
+                        row.appendChild(challengerWinrateCell);
+
+                        const winnerCell = document.createElement('td');
+                        winnerCell.textContent = log.winner;
+                        row.appendChild(winnerCell);
+
+                        const winsCell = document.createElement('td');
+                        const draws = log.championStats && typeof log.championStats.draws === 'number'
+                            ? log.championStats.draws
+                            : (log.challengerStats && typeof log.challengerStats.draws === 'number' ? log.challengerStats.draws : 0);
+                        const championWins = log.championStats && typeof log.championStats.playerWins === 'number' ? log.championStats.playerWins : 0;
+                        const challengerWins = log.challengerStats && typeof log.challengerStats.playerWins === 'number' ? log.challengerStats.playerWins : 0;
+                        winsCell.textContent = `${championWins}/${challengerWins}/${draws}`;
+                        row.appendChild(winsCell);
+
+                        body.appendChild(row);
+                    });
+
+                    table.appendChild(body);
+                    heroLogContainer.appendChild(table);
+                }
             }
 
             function renderResults(results) {
@@ -525,6 +789,146 @@
                         } catch (error) {
                             console.error(error);
                             renderError(error && error.message ? error.message : 'An unexpected error occurred during analysis.');
+                        }
+                    }, 10);
+                });
+            }
+
+            if (rankHeroesButton) {
+                rankHeroesButton.addEventListener('click', function () {
+                    if (!window.DeckCardAnalysis || typeof window.DeckCardAnalysis.simulateMatchup !== 'function') {
+                        renderHeroError('Deck analysis module is not available.');
+                        return;
+                    }
+
+                    const heroHash = heroHashInput ? heroHashInput.value.trim() : '';
+                    if (!heroHash) {
+                        renderHeroError('Enter a hero hash before ranking heroes.');
+                        return;
+                    }
+
+                    const deckInput = document.getElementById('deck1');
+                    const deckHash = deckInput ? deckInput.value.trim() : '';
+                    if (!deckHash) {
+                        renderHeroError('Enter an attacker deck hash before ranking heroes.');
+                        return;
+                    }
+
+                    const enemyInput = document.getElementById('deck2');
+                    const enemyDeckHash = enemyInput ? enemyInput.value.trim() : '';
+                    if (!enemyDeckHash) {
+                        renderHeroError('Enter an enemy deck hash before ranking heroes.');
+                        return;
+                    }
+
+                    const simulations = Number.parseInt(simulationsInput.value, 10);
+                    if (!Number.isFinite(simulations) || simulations <= 0) {
+                        renderHeroError('Simulations per duel must be a positive number.');
+                        return;
+                    }
+
+                    if (heroResultsContainer) {
+                        heroResultsContainer.innerHTML = '<p>Calculating...</p>';
+                    }
+                    if (heroLogContainer) {
+                        heroLogContainer.innerHTML = '';
+                    }
+
+                    window.setTimeout(() => {
+                        try {
+                            if (typeof window.DeckCardAnalysis.bootstrapSimulationEnvironment === 'function') {
+                                window.DeckCardAnalysis.bootstrapSimulationEnvironment();
+                            }
+
+                            const heroes = extractHeroesFromHash(heroHash);
+                            if (!heroes.length) {
+                                throw new Error('No heroes were found in the provided hero hash.');
+                            }
+
+                            const baseDeck = hash_decode(deckHash);
+                            if (!baseDeck || !Array.isArray(baseDeck.deck)) {
+                                throw new Error('Unable to decode the attacker deck hash.');
+                            }
+
+                            const baseDeckCards = baseDeck.deck.map(cloneUnitInfo);
+                            const duelLogs = [];
+                            const normalizedSimulations = Math.max(1, Math.floor(simulations));
+                            const enemyHash = enemyDeckHash;
+
+                            const initialHero = heroes[0];
+                            const initialDeckHash = buildHeroDeckHash(initialHero.unit, baseDeckCards);
+                            let bestHero = initialHero;
+                            let bestStats = window.DeckCardAnalysis.simulateMatchup(initialDeckHash, enemyHash, normalizedSimulations);
+
+                            for (let index = 1; index < heroes.length; index += 1) {
+                                const challenger = heroes[index];
+                                const challengerDeckHash = buildHeroDeckHash(challenger.unit, baseDeckCards);
+                                const challengerStats = window.DeckCardAnalysis.simulateMatchup(challengerDeckHash, enemyHash, normalizedSimulations);
+
+                                const previousChampionLabel = bestHero.label;
+                                const championStatsSnapshot = Object.assign({}, bestStats);
+                                const championWinrate = bestStats.playerWinrate;
+                                const challengerWinrate = challengerStats.playerWinrate;
+                                let winnerLabel = previousChampionLabel;
+
+                                if (challengerWinrate > championWinrate) {
+                                    winnerLabel = challenger.label;
+                                    bestHero = challenger;
+                                    bestStats = challengerStats;
+                                } else if (challengerWinrate === championWinrate) {
+                                    winnerLabel = 'Tie';
+                                }
+
+                                duelLogs.push({
+                                    iteration: index + 1,
+                                    championLabel: previousChampionLabel,
+                                    challengerLabel: challenger.label,
+                                    championStats: championStatsSnapshot,
+                                    challengerStats,
+                                    winner: winnerLabel,
+                                    championWinrate,
+                                    challengerWinrate
+                                });
+                            }
+
+                            renderHeroResults(bestHero, bestStats, duelLogs);
+                        } catch (error) {
+                            console.error(error);
+                            renderHeroError(error && error.message ? error.message : 'An unexpected error occurred while ranking heroes.');
+                        }
+                    }, 10);
+                });
+            }
+
+            if (rankPurpleRunesButton && runeResultsContainer) {
+                rankPurpleRunesButton.addEventListener('click', function () {
+                    if (!window.DeckCardAnalysis || typeof window.DeckCardAnalysis.rankPurpleRunes !== 'function') {
+                        renderRuneError('Deck analysis module is not available.');
+                        return;
+                    }
+
+                    const deckInput = document.getElementById('deck1');
+                    const deckHash = deckInput ? deckInput.value.trim() : '';
+                    if (!deckHash) {
+                        renderRuneError('Enter an attacker deck hash before ranking runes.');
+                        return;
+                    }
+
+                    const simulations = Number.parseInt(simulationsInput.value, 10);
+                    if (!Number.isFinite(simulations) || simulations <= 0) {
+                        renderRuneError('Simulations per duel must be a positive number.');
+                        return;
+                    }
+
+                    runeResultsContainer.innerHTML = '<p>Calculating...</p>';
+
+                    window.setTimeout(() => {
+                        try {
+                            const summary = window.DeckCardAnalysis.rankPurpleRunes(deckHash, simulations);
+                            renderRuneResults(summary.results);
+                        } catch (error) {
+                            console.error(error);
+                            renderRuneError(error && error.message ? error.message : 'An unexpected error occurred while ranking runes.');
                         }
                     }, 10);
                 });

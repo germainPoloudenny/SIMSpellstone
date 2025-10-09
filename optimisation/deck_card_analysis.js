@@ -78,7 +78,7 @@ function parseArguments() {
     console.error('Usage: node optimisation/deck_card_analysis.js <deckHash> [simulationsPerDuel]');
     process.exit(1);
   }
-  const simulations = simsArg ? Number(simsArg) : 100;
+  const simulations = simsArg ? Number(simsArg) : 10000;
   if (!Number.isFinite(simulations) || simulations <= 0) {
     console.error('The number of simulations must be a positive number.');
     process.exit(1);
@@ -166,10 +166,10 @@ function collectBattlegroundSelections() {
   return selections;
 }
 
-function createSimConfig(playerDeckHash, cpuDeckHash, simulations) {
+function createSimConfig(playerDeckHash, cpuDeckHash, simulations, options) {
   const battlegroundSelections = collectBattlegroundSelections();
 
-  return {
+  const config = {
     enemybges: battlegroundSelections.enemybges,
     getbattleground: battlegroundSelections.getbattleground,
     selfbges: battlegroundSelections.selfbges,
@@ -198,10 +198,26 @@ function createSimConfig(playerDeckHash, cpuDeckHash, simulations) {
     findFirstWin: false,
     findFirstLoss: false
   };
+
+  if (options && typeof options.surge === 'boolean') {
+    config.surge = options.surge;
+  }
+
+  return config;
 }
 
-function simulateMatchup(playerDeckHash, cpuDeckHash, simulations) {
-  const config = createSimConfig(playerDeckHash, cpuDeckHash, simulations);
+function runSimulationSegment(playerDeckHash, cpuDeckHash, simulations, surge) {
+  if (!Number.isFinite(simulations) || simulations <= 0) {
+    return { playerWins: 0, cpuWins: 0, draws: 0 };
+  }
+
+  const segmentSimulations = Math.floor(simulations);
+  if (segmentSimulations <= 0) {
+    return { playerWins: 0, cpuWins: 0, draws: 0 };
+  }
+
+  const options = surge ? { surge: true } : undefined;
+  const config = createSimConfig(playerDeckHash, cpuDeckHash, segmentSimulations, options);
   SIMULATOR.userControlled = false;
   SIMULATOR.config = config;
   SIMULATOR.battlegrounds = getBattlegrounds(config);
@@ -211,7 +227,7 @@ function simulateMatchup(playerDeckHash, cpuDeckHash, simulations) {
   let cpuWins = 0;
   let draws = 0;
 
-  for (let i = 0; i < simulations; i++) {
+  for (let i = 0; i < segmentSimulations; i += 1) {
     SIMULATOR.simulate();
     const playerAlive = SIMULATOR.field.player.commander.isAlive();
     const cpuAlive = SIMULATOR.field.cpu.commander.isAlive();
@@ -224,7 +240,35 @@ function simulateMatchup(playerDeckHash, cpuDeckHash, simulations) {
     }
   }
 
+  return { playerWins, cpuWins, draws };
+}
+
+// Split simulations so both decks start first evenly.
+function runDirectionalMatchup(playerDeckHash, cpuDeckHash, simulations) {
+  const normalizedSimulations = Math.floor(Number(simulations) || 0);
+  if (normalizedSimulations <= 0) {
+    return {
+      playerWins: 0,
+      cpuWins: 0,
+      draws: 0,
+      total: 0,
+      playerWinrate: 0,
+      cpuWinrate: 0,
+      drawRate: 0
+    };
+  }
+
+  const playerFirstSimulations = Math.ceil(normalizedSimulations / 2);
+  const cpuFirstSimulations = normalizedSimulations - playerFirstSimulations;
+
+  const playerFirstStats = runSimulationSegment(playerDeckHash, cpuDeckHash, playerFirstSimulations, false);
+  const cpuFirstStats = runSimulationSegment(playerDeckHash, cpuDeckHash, cpuFirstSimulations, true);
+
+  const playerWins = playerFirstStats.playerWins + cpuFirstStats.playerWins;
+  const cpuWins = playerFirstStats.cpuWins + cpuFirstStats.cpuWins;
+  const draws = playerFirstStats.draws + cpuFirstStats.draws;
   const total = playerWins + cpuWins + draws;
+
   return {
     playerWins,
     cpuWins,
@@ -236,6 +280,42 @@ function simulateMatchup(playerDeckHash, cpuDeckHash, simulations) {
   };
 }
 
+function simulateMatchup(playerDeckHash, cpuDeckHash, simulations) {
+  const normalizedSimulations = Math.floor(Number(simulations) || 0);
+  if (normalizedSimulations <= 0) {
+    return {
+      playerWins: 0,
+      cpuWins: 0,
+      draws: 0,
+      total: 0,
+      playerWinrate: 0,
+      cpuWinrate: 0,
+      drawRate: 0
+    };
+  }
+
+  const halfSimulations = Math.floor(normalizedSimulations / 2);
+  const forwardSimulations = halfSimulations + (normalizedSimulations % 2);
+  const reverseSimulations = halfSimulations;
+
+  const forwardStats = runDirectionalMatchup(playerDeckHash, cpuDeckHash, forwardSimulations);
+  const reverseStats = runDirectionalMatchup(cpuDeckHash, playerDeckHash, reverseSimulations);
+
+  const playerWins = forwardStats.playerWins + reverseStats.cpuWins;
+  const cpuWins = forwardStats.cpuWins + reverseStats.playerWins;
+  const draws = forwardStats.draws + reverseStats.draws;
+  const total = playerWins + cpuWins + draws;
+
+  return {
+    playerWins,
+    cpuWins,
+    draws,
+    total,
+    playerWinrate: total ? playerWins / total : 0,
+    cpuWinrate: total ? cpuWins / total : 0,
+    drawRate: total ? draws / total : 0
+  };
+}
 function cloneUnitInfo(unitInfo) {
   if (!unitInfo) {
     return unitInfo;
@@ -350,7 +430,7 @@ function runDeckCardAnalysis(deckHash, simulations) {
     throw new Error('A deck hash is required to analyse cards.');
   }
 
-  const desiredSimulations = simulations === undefined ? 100 : Number(simulations);
+  const desiredSimulations = simulations === undefined ? 10000 : Number(simulations);
   if (!Number.isFinite(desiredSimulations) || desiredSimulations <= 0) {
     throw new Error('Simulations per duel must be a positive number.');
   }
@@ -367,7 +447,7 @@ function optimizeDeck(deckHash, replacementsHash, simulations) {
     throw new Error('A deck hash is required to optimize a deck.');
   }
 
-  const desiredSimulations = simulations === undefined ? 100 : Number(simulations);
+  const desiredSimulations = simulations === undefined ? 10000 : Number(simulations);
   if (!Number.isFinite(desiredSimulations) || desiredSimulations <= 0) {
     throw new Error('Simulations per duel must be a positive number.');
   }
@@ -447,6 +527,99 @@ function optimizeDeck(deckHash, replacementsHash, simulations) {
   };
 }
 
+// List all runes applicable to a given card, optionally filtered
+function listApplicableRunes(card, predicate) {
+  const results = [];
+  if (!card || typeof canUseRune !== 'function' || typeof RUNES !== 'object') {
+    return results;
+  }
+  for (const key in RUNES) {
+    if (!Object.prototype.hasOwnProperty.call(RUNES, key)) continue;
+    const rune = RUNES[key];
+    if (!rune || !rune.id) continue;
+    if (predicate && !predicate(rune)) continue;
+    try {
+      if (canUseRune(card, rune.id)) {
+        results.push(rune);
+      }
+    } catch (e) {
+      // Ignore invalid checks
+    }
+  }
+  return results;
+}
+
+// Rank purple (rarity 4) runes for each non-commander unit in the deck
+function rankPurpleRunes(deckHash, simulations) {
+  bootstrapSimulationEnvironment();
+
+  if (!deckHash) {
+    throw new Error('A deck hash is required to rank runes.');
+  }
+
+  const desiredSimulations = simulations === undefined ? 10000 : Number(simulations);
+  if (!Number.isFinite(desiredSimulations) || desiredSimulations <= 0) {
+    throw new Error('Simulations per duel must be a positive number.');
+  }
+  const normalizedSimulations = Math.floor(desiredSimulations);
+
+  const decodedDeck = hash_decode(deckHash);
+  if (!decodedDeck || !Array.isArray(decodedDeck.deck) || !decodedDeck.deck.length) {
+    throw new Error('The provided deck hash does not contain any cards.');
+  }
+
+  const results = [];
+  const occurrenceTracker = {};
+
+  for (let idx = 0; idx < decodedDeck.deck.length; idx += 1) {
+    const unitInfo = decodedDeck.deck[idx];
+    const unitCard = getCardByID(unitInfo);
+    if (!unitCard || typeof unitCard.isCommander !== 'function' || unitCard.isCommander() || Number(unitCard.rarity) < 3) {
+      continue;
+    }
+
+    // Build a baseline deck with this unit having no rune
+    const baselineDeck = cloneDeckDefinition(decodedDeck);
+    baselineDeck.deck[idx] = cloneUnitInfo(unitInfo);
+    baselineDeck.deck[idx].runes = [];
+    const baselineHash = hash_encode(baselineDeck);
+
+    // Collect applicable purple runes (rarity === 4)
+    const applicableRunes = listApplicableRunes(unitCard, (r) => Number(r.rarity) === 4);
+    if (!applicableRunes.length) {
+      continue;
+    }
+
+    const runeRankings = [];
+    for (let r = 0; r < applicableRunes.length; r += 1) {
+      const rune = applicableRunes[r];
+      const variantDeck = cloneDeckDefinition(baselineDeck);
+      variantDeck.deck[idx] = cloneUnitInfo(variantDeck.deck[idx]);
+      variantDeck.deck[idx].runes = [{ id: rune.id }];
+      const variantHash = hash_encode(variantDeck);
+
+      const stats = simulateMatchup(variantHash, baselineHash, normalizedSimulations);
+      const impact = stats.playerWinrate - stats.cpuWinrate;
+      runeRankings.push({
+        runeId: rune.id,
+        runeDesc: rune.desc || String(rune.id),
+        stats,
+        impact
+      });
+    }
+
+    runeRankings.sort((a, b) => b.impact - a.impact || b.stats.playerWinrate - a.stats.playerWinrate);
+
+    results.push({
+      cardIndex: idx,
+      label: formatCardLabel(unitInfo, occurrenceTracker),
+      runeRankings
+    });
+  }
+
+  return { deckHash, simulations: normalizedSimulations, results };
+}
+
 function main() {
   const { deckHash, simulations } = parseArguments();
   const { results } = runDeckCardAnalysis(deckHash, simulations);
@@ -456,6 +629,7 @@ function main() {
 const api = {
   run: runDeckCardAnalysis,
   optimizeDeck,
+  rankPurpleRunes,
   analyzeDeck,
   simulateMatchup,
   createSimConfig,
@@ -471,4 +645,6 @@ if (isNode) {
 } else {
   window.DeckCardAnalysis = api;
 }
+
+
 
