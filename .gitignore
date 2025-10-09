@@ -23,5 +23,5 @@ saved_decks.js
 /Downloads
 /.venv
 
-res/*
+res/
 .gitignore
